@@ -107,7 +107,79 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    private fun captureVideo() {}
+    private fun captureVideo() {
+        // Verifica si se creó el caso de uso de VideoCapture. De lo contrario, no hagas nada.
+        val videoCapture = this.videoCapture ?: return
+
+        // Inhabilita la IU hasta que CameraX complete la acción de solicitud. Esta se volverá
+        // a habilitar dentro de nuestro VideoRecordListener registrado en pasos posteriores.
+        viewBinding.videoCaptureButton.isEnabled = false
+
+        // Si hay una grabación activa en curso, detenla y libera la recording actual.
+        val curRecording = recording
+        if (curRecording != null) {
+            // Stop the current recording session.
+            curRecording.stop()
+            recording = null
+            return
+        }
+
+        // create and start a new recording session
+        val name = SimpleDateFormat(FILENAME_FORMAT, Locale.US)
+            .format(System.currentTimeMillis())
+        val contentValues = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+            put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
+            if (Build.VERSION.SDK_INT > Build.VERSION_CODES.P) {
+                put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/CameraX-Video")
+            }
+        }
+
+        // Crea un MediaStoreOutputOptions.Builder con la opción de contenido externo.
+        val mediaStoreOutputOptions = MediaStoreOutputOptions
+            .Builder(contentResolver, MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
+            .setContentValues(contentValues) // Configura el video creado contentValues como MediaStoreOutputOptions.Builder
+            .build()
+        recording = videoCapture.output// Configura la opción de salida en el Recorder de VideoCapture<Recorder>
+            .prepareRecording(this, mediaStoreOutputOptions)
+            .apply {
+                if (PermissionChecker.checkSelfPermission(this@MainActivity,
+                        Manifest.permission.RECORD_AUDIO) ==
+                    PermissionChecker.PERMISSION_GRANTED)
+                {
+                    withAudioEnabled()
+                }
+            }
+            // Inicia esta nueva grabación y registra un objeto de escucha lambda VideoRecordEvent
+            .start(ContextCompat.getMainExecutor(this)) { recordEvent ->
+                when(recordEvent) {
+                    is VideoRecordEvent.Start -> { // activa o desactiva el texto del botón "Start Capture" para que diga "Stop Capture"
+                        viewBinding.videoCaptureButton.apply {
+                            text = getString(R.string.stop_capture)
+                            isEnabled = true
+                        }
+                    }
+                    is VideoRecordEvent.Finalize -> {
+                        if (!recordEvent.hasError()) {
+                            val msg = "Video capture succeeded: " +
+                                    "${recordEvent.outputResults.outputUri}"
+                            Toast.makeText(baseContext, msg, Toast.LENGTH_SHORT)
+                                .show()
+                            Log.d(TAG, msg)
+                        } else {
+                            recording?.close()
+                            recording = null
+                            Log.e(TAG, "Video capture ends with error: " +
+                                    "${recordEvent.error}")
+                        }
+                        viewBinding.videoCaptureButton.apply {
+                            text = getString(R.string.start_capture)
+                            isEnabled = true
+                        }
+                    }
+                }
+            }
+    }
 
     private fun startCamera() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
@@ -123,6 +195,11 @@ class MainActivity : AppCompatActivity() {
                     it.setSurfaceProvider(viewBinding.viewFinder.surfaceProvider)
                 }
 
+            val recorder = Recorder.Builder()
+                .setQualitySelector(QualitySelector.from(Quality.HIGHEST))
+                .build()
+            videoCapture = VideoCapture.withOutput(recorder)
+
             imageCapture = ImageCapture.Builder().build()
 
             val imageAnalyzer = ImageAnalysis.Builder()
@@ -133,6 +210,7 @@ class MainActivity : AppCompatActivity() {
                     })
                 }
 
+
             // Select back camera as a default
             val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
@@ -141,9 +219,8 @@ class MainActivity : AppCompatActivity() {
                 cameraProvider.unbindAll()
 
                 // Bind use cases to camera
-                cameraProvider.bindToLifecycle(
-                    this, cameraSelector, preview, imageCapture, imageAnalyzer)
-
+                cameraProvider
+                    .bindToLifecycle(this, cameraSelector, preview, imageCapture, imageAnalyzer, videoCapture)
             } catch(exc: Exception) {
                 Log.e(TAG, "Use case binding failed", exc)
             }
